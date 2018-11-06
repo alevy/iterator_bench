@@ -1,0 +1,7 @@
+[package]
+name = "conv"
+version = "0.1.0"
+authors = ["Amit Aryeh Levy <amit@amitlevy.com>"]
+
+[dependencies]
+rand = "*"
