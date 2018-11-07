@@ -4,11 +4,21 @@ extern crate rand;
 extern crate test;
 
 fn main() {
+    let mut app_buf: [u8; 640000] = [0; 640000];
+    let mut other_buf: [u16; 320000] = [0; 320000];
+    for c in other_buf.iter_mut() {
+        *c = 0xffaa;
+    }
+    zip_chunks_fixed_size::_impl(&mut app_buf, &other_buf);
+    zip_chunks_fixed_size_take_iter::_impl(&mut app_buf, &other_buf);
+
+    println!("{}", app_buf[55]);
 }
 
 macro_rules! conv {
     ( $name:ident, $output:ty, $input:ty, $impl:expr ) => {
         mod $name {
+            #[allow(unused_imports)]
             use test::{Bencher, black_box};
             #[test]
             fn _test() {
@@ -43,7 +53,7 @@ macro_rules! conv {
             }
 
             #[inline(never)]
-            fn _impl(output: &mut $output, input: &$input) {
+            pub fn _impl(output: &mut $output, input: &$input) {
                 $impl(output, input)
             }
         }
@@ -74,7 +84,7 @@ conv!(c_style_output_size_fixed, [u8; 640000], [u16], |output: &mut [u8; 640000]
    }
 });
 
-conv!(c_style_unknown_size, [u8], [u16], #[inline(never)] |output: &mut [u8], input: &[u16]| {
+conv!(c_style_unknown_size, [u8], [u16], |output: &mut [u8], input: &[u16]| {
     for i in 0..input.len() {
         let b = input[i];
         output[2 * i] = (b & 0xff) as u8;
