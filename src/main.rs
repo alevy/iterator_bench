@@ -9,13 +9,13 @@ fn main() {
     for c in other_buf.iter_mut() {
         *c = 0xffaa;
     }
-    zip_chunks_fixed_size::_impl(&mut app_buf, &other_buf);
+    optimal_unsafe::_impl(&mut app_buf, &other_buf);
     zip_chunks_fixed_size_take_iter::_impl(&mut app_buf, &other_buf);
 
     println!("{}", app_buf[55]);
 }
 
-macro_rules! conv {
+macro_rules! benchmark {
     ( $name:ident, $output:ty, $input:ty, $impl:expr ) => {
         mod $name {
             #[allow(unused_imports)]
@@ -60,8 +60,33 @@ macro_rules! conv {
     }
 }
 
+/// This is the implementation we would write in C.
+///
+///   * It iterators over the input array with a C-style for-loop.
+///
+///   * It uses regular arrays (rather than slices with double-worded pointers)
+///
+///   * It explicitly avoids bounds-checking by using the unsafe `get_unchecked[_mut]` operation.
+///
+/// On my (@alevy's) laptop, with an 2.6GHz Intel i5 and 14-stage pipeline, it take just under
+/// 40,000ns, which is approximately 104,000 clock cycles to loop and process over 640,000
+/// elements.
+///
+/// This seems _more_ than optimal, but inspecting the assembly, the math checks out.
+///
+/// The compiler has managed to compile this into packed moves. So there are only 20,000 iterations
+/// of the loop with 5 instructions each.
+benchmark!(optimal_unsafe, [u8; 640000], [u16; 320000], |output: &mut [u8; 640000], input: &[u16; 320000]| {
+    for i in 0..input.len() {
+        unsafe {
+            let b = *input.get_unchecked(i);
+            *output.get_unchecked_mut(2 * i) = (b & 0xff) as u8;
+            *output.get_unchecked_mut(2 * i + 1) = ((b >> 8) & 0xff) as u8;
+        }
+    }
+});
 
-conv!(c_style_fixed_size, [u8; 640000], [u16; 320000], |output: &mut [u8; 640000], input: &[u16; 320000]| {
+benchmark!(c_style_fixed_size, [u8; 640000], [u16; 320000], |output: &mut [u8; 640000], input: &[u16; 320000]| {
     for i in 0..input.len() {
         let b = input[i];
         output[2 * i] = (b & 0xff) as u8;
@@ -69,14 +94,7 @@ conv!(c_style_fixed_size, [u8; 640000], [u16; 320000], |output: &mut [u8; 640000
     }
 });
 
-conv!(c_style_input_size_fixed, [u8], [u16; 320000], |output: &mut [u8], input: &[u16; 320000]| {
-    for (i, &b) in input.iter().enumerate() {
-        output[2 * i] = (b & 0xff) as u8;
-        output[2 * i + 1] = ((b >> 8) & 0xff) as u8;
-   }
-});
-
-conv!(c_style_output_size_fixed, [u8; 640000], [u16], |output: &mut [u8; 640000], input: &[u16]| {
+benchmark!(c_style_input_size_fixed, [u8], [u16; 320000], |output: &mut [u8], input: &[u16; 320000]| {
     for i in 0..input.len() {
         let b = input[i];
         output[2 * i] = (b & 0xff) as u8;
@@ -84,7 +102,7 @@ conv!(c_style_output_size_fixed, [u8; 640000], [u16], |output: &mut [u8; 640000]
    }
 });
 
-conv!(c_style_unknown_size, [u8], [u16], |output: &mut [u8], input: &[u16]| {
+benchmark!(c_style_output_size_fixed, [u8; 640000], [u16], |output: &mut [u8; 640000], input: &[u16]| {
     for i in 0..input.len() {
         let b = input[i];
         output[2 * i] = (b & 0xff) as u8;
@@ -92,7 +110,24 @@ conv!(c_style_unknown_size, [u8], [u16], |output: &mut [u8], input: &[u16]| {
    }
 });
 
-conv!(zip_chunks_fixed_size, [u8; 640000], [u16; 320000], |output: &mut [u8; 640000], input: &[u16; 320000]| {
+benchmark!(c_style_unknown_size, [u8], [u16], |output: &mut [u8], input: &[u16]| {
+    for i in 0..input.len() {
+        let b = input[i];
+        output[2 * i] = (b & 0xff) as u8;
+        output[2 * i + 1] = ((b >> 8) & 0xff) as u8;
+   }
+});
+
+benchmark!(c_style_unknown_size_limit, [u8], [u16], |output: &mut [u8], input: &[u16]| {
+    use std::cmp::max;
+    for i in 0..max(320000, input.len()) {
+        let b = input[i];
+        output[2 * i] = (b & 0xff) as u8;
+        output[2 * i + 1] = ((b >> 8) & 0xff) as u8;
+   }
+});
+
+benchmark!(zip_chunks_fixed_size, [u8; 640000], [u16; 320000], |output: &mut [u8; 640000], input: &[u16; 320000]| {
     for (&b, ac) in input.iter().zip(output.chunks_mut(2)) {
         // the type of `ac` is `[u8]`, but the optimizer should be able to figure out that it's
         // always size 2, and thus should elide the bounds checks in the inner loop.
@@ -101,7 +136,7 @@ conv!(zip_chunks_fixed_size, [u8; 640000], [u16; 320000], |output: &mut [u8; 640
     }
 });
 
-conv!(zip_chunks_fixed_size_take, [u8; 640000], [u16; 320000], |output: &mut [u8; 640000], input: &[u16; 320000]| {
+benchmark!(zip_chunks_fixed_size_take, [u8; 640000], [u16; 320000], |output: &mut [u8; 640000], input: &[u16; 320000]| {
     for (&b, ac) in input.iter().zip(output.chunks_mut(2)).take(320000) {
         // the type of `ac` is `[u8]`, but the optimizer should be able to figure out that it's
         // always size 2, and thus should elide the bounds checks in the inner loop.
@@ -110,7 +145,7 @@ conv!(zip_chunks_fixed_size_take, [u8; 640000], [u16; 320000], |output: &mut [u8
     }
 });
 
-conv!(zip_chunks_fixed_size_take_iter, [u8; 640000], [u16; 320000], |output: &mut [u8; 640000], input: &[u16; 320000]| {
+benchmark!(zip_chunks_fixed_size_take_iter, [u8; 640000], [u16; 320000], |output: &mut [u8; 640000], input: &[u16; 320000]| {
     for (&b, ac) in input.iter().zip(output.chunks_mut(2)).take(320000) {
         let mut val = b;
         for byte in ac.iter_mut() {
@@ -120,7 +155,7 @@ conv!(zip_chunks_fixed_size_take_iter, [u8; 640000], [u16; 320000], |output: &mu
     }
 });
 
-conv!(zip_chunks_output_size_fixed, [u8; 640000], [u16], |output: &mut [u8; 640000], input: &[u16]| {
+benchmark!(zip_chunks_output_size_fixed, [u8; 640000], [u16], |output: &mut [u8; 640000], input: &[u16]| {
     for (&b, ac) in input.iter().zip(output.chunks_mut(2)) {
         // the type of `ac` is `[u8]`, but the optimizer should be able to figure out that it's
         // always size 2, and thus should elide the bounds checks in the inner loop.
@@ -129,7 +164,7 @@ conv!(zip_chunks_output_size_fixed, [u8; 640000], [u16], |output: &mut [u8; 6400
     }
 });
 
-conv!(zip_chunks_input_size_fixed, [u8], [u16; 320000], |output: &mut [u8], input: &[u16; 320000]| {
+benchmark!(zip_chunks_input_size_fixed, [u8], [u16; 320000], |output: &mut [u8], input: &[u16; 320000]| {
     for (&b, ac) in input.iter().zip(output.chunks_mut(2)) {
         // the type of `ac` is `[u8]`, but the optimizer should be able to figure out that it's
         // always size 2, and thus should elide the bounds checks in the inner loop.
@@ -138,21 +173,45 @@ conv!(zip_chunks_input_size_fixed, [u8], [u16; 320000], |output: &mut [u8], inpu
     }
 });
 
-conv!(zip_chunks_unknown_size, [u8], [u16], |output: &mut [u8], input: &[u16]| {
+benchmark!(zip_chunks_unknown_size, [u8], [u16], |output: &mut [u8], input: &[u16]| {
    for (b, ac) in input.iter().zip(output.chunks_mut(2)) {
      ac[0] = (*b & 0xff) as u8;
      ac[1] = ((*b >> 8) & 0xff) as u8;
    }
 });
 
-conv!(zip_chunks_exact_unknown_size_take, [u8], [u16], |output: &mut [u8], input: &[u16]| {
+benchmark!(zip_chunks_unknown_size_take, [u8], [u16], |output: &mut [u8], input: &[u16]| {
+   for (b, ac) in input.iter().zip(output.chunks_mut(2)).take(320000) {
+     ac[0] = (*b & 0xff) as u8;
+     ac[1] = ((*b >> 8) & 0xff) as u8;
+   }
+});
+
+benchmark!(zip_chunks_unknown_size_take_iter, [u8], [u16], |output: &mut [u8], input: &[u16]| {
+    for (&b, ac) in input.iter().zip(output.chunks_mut(2)).take(320000) {
+        let mut val = b;
+        for byte in ac.iter_mut() {
+            *byte = (val & 0xFF) as u8;
+            val = val >> 8;
+        }
+    }
+});
+
+benchmark!(zip_chunks_exact_unknown_size, [u8], [u16], |output: &mut [u8], input: &[u16]| {
    for (b, ac) in input.iter().zip(output.chunks_exact_mut(2)) {
      ac[0] = (*b & 0xff) as u8;
      ac[1] = ((*b >> 8) & 0xff) as u8;
    }
 });
 
-conv!(zip_chunks_exact_unknown_size_take_iter, [u8], [u16], |output: &mut [u8], input: &[u16]| {
+benchmark!(zip_chunks_exact_unknown_size_take, [u8], [u16], |output: &mut [u8], input: &[u16]| {
+   for (b, ac) in input.iter().zip(output.chunks_exact_mut(2)).take(320000) {
+     ac[0] = (*b & 0xff) as u8;
+     ac[1] = ((*b >> 8) & 0xff) as u8;
+   }
+});
+
+benchmark!(zip_chunks_exact_unknown_size_take_iter, [u8], [u16], |output: &mut [u8], input: &[u16]| {
     for (&b, ac) in input.iter().zip(output.chunks_exact_mut(2)).take(320000) {
         let mut val = b;
         for byte in ac.iter_mut() {
