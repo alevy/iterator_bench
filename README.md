@@ -30,7 +30,7 @@ downloading and installing a working version for you.
 To install `rustup`, typically, run:
 
 ```bash
-$ curl [rustup_url] | sh
+$ curl https://sh.rustup.rs -sSf | sh
 ```
 
 Some distributions (NixOS, Homebrew) might have `rustup` available through
